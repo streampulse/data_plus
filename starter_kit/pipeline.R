@@ -12,7 +12,7 @@ subset$dateTimeUTC = as.POSIXct(subset$dateTimeUTC, tz='UTC')
 
 variables = unique(subset$variable)
 variables = variables[variables != 'Battery_V']
-foc_var = variables[1]
+foc_var = variables[5]
 series = filter(subset, variable == foc_var) %>%
     arrange(dateTimeUTC)
 
@@ -167,7 +167,7 @@ outlier_inds = jump_inds[posNeg_jump_pairs]
 n_outlier_pieces = Inf #an outlier piece is one unidirectional jump
 counter = 0 #dont loop for too long
 if(length(outlier_inds) == 1){
-    outlier_ts = 'NONE' #if only one ind, can't be an alternating jump
+    outlier_ts = 'NONE' #if only one ind, can't be a +/- pair
 } else {
     while(length(outlier_inds) > 1 & n_outlier_pieces > 50 & counter < 6){
 
@@ -177,12 +177,12 @@ if(length(outlier_inds) == 1){
         #now "jump" refers to the gap between potential outlier indices
         short_jumps = outdif < 15
 
-        #if the first jump is long, assume the first outlier piece
+        #***if the first jump is long, assume the first outlier piece
         #is a component of a data feature that got cut off by the border
         #of the time window, (which will cause a "frameshift mutation"
         #downstream, so remove it).
-        #***This step is only relevant when this script is used in production.
-        #now we're operating on a full time series, not a moving window,
+        #This step is only relevant when this script is used in production.
+        #for Data+ we're operating on a full time series, not a moving window,
         #so it shouldn't be necessary.
         if(! short_jumps[1]){
             outlier_inds = outlier_inds[-1]
@@ -201,15 +201,13 @@ if(length(outlier_inds) == 1){
         multijumps = jump_runs[jump_runs[,'lengths'] > 1, 2:3, drop=FALSE]
         if(length(multijumps)){
 
-            #filter jumps with long gaps between
+            #filter jumps with long gaps between (keep only short multijumps)
             multijumps = multijumps[short_jumps[multijumps[,'starts']],,
                 drop=FALSE]
 
             #interpolate indices within multijumps that do not
             #themselves represent jumps
-            seq_list = mapply(function(x, y){
-                seq(x, y+1, 1)
-            },
+            seq_list = mapply(function(x, y){ seq(x, y + 1, 1) },
                 multijumps[,1], multijumps[,2],
                 SIMPLIFY=FALSE)
 
@@ -226,19 +224,18 @@ if(length(outlier_inds) == 1){
             next
         }
 
-        #if none of the outier pieces are near each other, there can be
-        #no pos/neg pairs, so assume no outliers
+        #if none of the outlier pieces is near another, there can be
+        #no +/- pairs, so assume no outliers
         if(all(big_outdif)){
             outlier_ts = 'NONE'
             break
         } else {
 
-            #find remaining one-way jumps
-            #same_sign_runs = rle2(as.numeric(big_outdif), indices=TRUE,
-            #    return.list=TRUE)
+            #find remaining one-way jumps (outlier pieces)
             same_sign_runs = rle(as.numeric(big_outdif))
             same_sign_run_ends = cumsum(same_sign_runs$lengths)
-            same_sign_run_starts = c(1, same_sign_run_ends[-length(same_sign_run_ends)] + 1)
+            same_sign_run_starts = c(1,
+                same_sign_run_ends[-length(same_sign_run_ends)] + 1)
 
             if(length(same_sign_runs)){
                 l = same_sign_runs$lengths
@@ -246,7 +243,6 @@ if(length(outlier_inds) == 1){
                 for(i in 1:length(l)){
                     if(l[i] > 1){
                         s = same_sign_run_starts[i]
-                        # s = same_sign_runs$starts[i]
                         one_way_jumps = append(one_way_jumps,
                             seq(s, s + (l[i] - 2), 1))
                     }
@@ -299,7 +295,6 @@ if(n_outlier_pieces > 50 || !exists('outlier_ts') ||
 }
 
 #bring in the global outliers from above
-# print(big_outliers)
 if(length(outlier_ts) == 1 && outlier_ts == 'NONE'){
     if(length(big_outliers)){
         outlier_ts = unique(big_outliers)
@@ -309,6 +304,15 @@ if(length(outlier_ts) == 1 && outlier_ts == 'NONE'){
 } else {
     outlier_ts = unique(c(outlier_ts, big_outliers))
 }
-outlier_list[[col]] = outlier_ts
-names(outlier_list)[col] = colnames(df)[col]
 
+#list appending is a relic from production, where this runs in a loop
+outlier_list[[1]] = outlier_ts
+names(outlier_list)[1] = colnames(df)[1]
+
+#visualize global and local potential outliers together
+plot(series$dateTimeUTC, tm, col='orange', ylab=foc_var, type='l', xlab='', bty='l')
+lines(series$dateTimeUTC, series$value, col='gray')
+points(series$dateTimeUTC[outlier_ts], tm[outlier_ts], col='darkred', pch=20)
+points(series$dateTimeUTC[big_outliers], tm[big_outliers], col='red', pch=20)
+legend('bottom', legend=c('global outlier', 'local outlier'),
+    pch=20, col=c('red', 'darkred'), bty='n')
