@@ -1,12 +1,13 @@
 library(dplyr)
 library(zoo)
 
-sp = read.csv('~/git/data+/starter_kit/flagged_sites.csv',
+sp = read.csv('~/git/_data+/starter_kit/flagged_sites.csv',
     stringsAsFactors=FALSE)
 
 #prepare data; isolate one sensor series from one site
 foc_site = 'NHC'
 subset = filter(sp, siteID == foc_site)
+rm(sp); gc() #free up memory
 subset = subset[! duplicated(subset),]
 subset$dateTimeUTC = as.POSIXct(subset$dateTimeUTC, tz='UTC')
 
@@ -16,7 +17,7 @@ foc_var = variables[5]
 series = filter(subset, variable == foc_var) %>%
     arrange(dateTimeUTC)
 
-#remove duplicate rows, preferring "bad data" flags
+#remove duplicate rows, preferring "bad data" flags (these will usually be outliers)
 is_dupe = duplicated(series$dateTimeUTC) |
     duplicated(series$dateTimeUTC, fromLast=TRUE)
 dupes = series[is_dupe,]
@@ -34,7 +35,7 @@ series = filter(series, ! is_dupe) %>%
     bind_rows(keepers) %>%
     arrange(dateTimeUTC)
 
-#fill out missing samples; visualize
+#fill out missing sample times with NAs; visualize
 sample_interval = as.numeric(difftime(series$dateTimeUTC[2],
     series$dateTimeUTC[1]))
 
@@ -55,7 +56,8 @@ tm = ts(tm, deltat = 1/samp_per_day)
 #linearly interpolate NAs
 tm = na.approx(tm)
 par(mfrow=c(3,1))
-plot(series$dateTimeUTC, tm, col='orange', ylab=foc_var, type='l', xlab='', bty='l')
+plot(series$dateTimeUTC, tm, col='orange', ylab=foc_var, type='l', xlab='',
+    bty='l')
 lines(series$dateTimeUTC, series$value, col='gray')
 legend('bottomleft', legend='interpolated', lty=1, col='orange', bty='n')
 
@@ -75,8 +77,11 @@ legend('bottom', legend='+/- 4 SD', pch=20, col='red', bty='n')
 diffs = diff(tm)
 
 #get mean and sd of diffs (large ones are later referred to as "jumps")
-u = mean(diffs, na.rm=TRUE)
-sd = sd(diffs, na.rm=TRUE)
+#ignore diffs made by big outliers when calculating these statistics.
+bo_diffs = union(big_outliers, big_outliers - 1)
+bo_diffs = bo_diffs[bo_diffs > 0]
+u = mean(diffs[-bo_diffs], na.rm=TRUE)
+sd = sd(diffs[-bo_diffs], na.rm=TRUE)
 
 #expand sd threshold until <3% of diffs are outside sd bounds
 #these are now potential outliers in addition to the globals above
@@ -95,8 +100,12 @@ neg_jumps = which(diffs < -sd_scaler * sd)
 jump_inds = sort(c(pos_jumps, neg_jumps))
 
 plot(diffs, col='gray', ylab=foc_var, main='diffs', xlab='', bty='l')
-points(time(tm)[pos_jumps], diffs[pos_jumps], col='orange1')
-points(time(tm)[neg_jumps], diffs[neg_jumps], col='orange3')
+# xlim=c(as.POSIXct('2017-04-05 18:00:00'),
+#     as.POSIXct('2017-04-05 20:00:00')))
+# xlim=c(203.2,203.4),
+# ylim=c(-50, 50))
+points(time(tm)[pos_jumps + 1], diffs[pos_jumps], col='orange1')
+points(time(tm)[neg_jumps + 1], diffs[neg_jumps], col='orange3')
 legend('topleft', legend=c('positive jumps', 'negative jumps'),
     pch=1, col=c('orange1', 'orange3'), bty='n')
 
@@ -141,12 +150,12 @@ if(length(long_runs)){
             next
         }
 
-        #otherwise it's a long run of jumps (a real data
+        #otherwise it's a run of real jumps (a real data
         #feature) followed by a potential outlier, or vice-versa
 
         #find out which end of the run has the shorter time interval
         #between adjacent jumps and assume that end does not contain
-        #the potential outlier (silly assumption)
+        #the potential outlier (crude)
         t = time(tm)[j + 1] #+1 to convert from diff inds to ts inds
         left_jump_interv = t[2] - t[1]
         right_jump_interv = t[length(t)] - t[length(t)-1]
@@ -155,17 +164,49 @@ if(length(long_runs)){
         #store the index of the other end of the run. this one might be
         #an actual outlier (a positive-negative or negative-positive jump pair,
         #hereinafter referred to as a "+/- pair" or posNeg_jump_pair)
-        keep = append(keep, i[-not_outlier]) #what's with that indexing?
+        keep = append(keep, i[-not_outlier])
+        # keep = append(keep, ifelse(not_outlier == 2, j[1], j[length(j)]))
     }
 }
 
 #all remaining inds may represent +/- pairs
-posNeg_jump_pairs = sort(unique(c(keep, as.vector(runs[! lr, 2:3]))))
+short_run_inds = as.vector(runs[! lr, 2:3])
+posNeg_jump_pairs = sort(unique(c(keep, short_run_inds)))
 outlier_inds = jump_inds[posNeg_jump_pairs]
+
+# #this section just for testing
+# regulars = jump_inds[sort(unique(short_run_inds))]
+# keepers = jump_inds[sort(unique(keep))]
+# lra = as.vector(t(runs[lr, 2:3]))
+# gfgf = mapply(seq, lra[seq(1, length(lra), 2)], lra[seq(2, length(lra), 2)])
+# rbc = rainbow(10)
+# rbcr = rep(rbc, length.out=length(gfgf))
+# cols = rep(rbcr, times=sapply(gfgf, length))
+# alllr = jump_inds[sort(unlist(gfgf))]
+#
+#
+# plot(diffs, col='gray', ylab=foc_var, main='diffs', xlab='', bty='l', type='l',
+#     # xlim=c(as.POSIXct('2017-04-05 18:00:00'),
+#     #     as.POSIXct('2017-04-05 20:00:00')))
+#     xlim=c(203.2,203.4),
+#     # xlim=c(395.4,395.5),
+#     # xlim=c(405.2,405.3),
+#     # xlim=c(195,205),
+#     # xlim=c(213,216),
+#     # xlim=c(1.5,2),
+#     # ylim=c(-5, 5))
+#     # ylim=c(-.5, .5))
+#     ylim=c(-50, 50))
+# points(time(tm)[outlier_inds + 1], diffs[outlier_inds], col='green')
+# points(time(tm)[alllr + 1], diffs[alllr], col=cols)
+# points(time(tm)[keepers + 1], diffs[keepers], col='black')
+# points(time(tm)[regulars + 1], diffs[regulars], col='orange3')
+
 
 #winnow them down using various heuristics
 n_outlier_pieces = Inf #an outlier piece is one unidirectional jump
 counter = 0 #dont loop for too long
+removed_first = removed_last = FALSE
 if(length(outlier_inds) == 1){
     outlier_ts = 'NONE' #if only one ind, can't be a +/- pair
 } else {
@@ -184,9 +225,22 @@ if(length(outlier_inds) == 1){
         #This step is only relevant when this script is used in production.
         #for Data+ we're operating on a full time series, not a moving window,
         #so it shouldn't be necessary.
-        if(! short_jumps[1]){
+        if(! short_jumps[1]){ # && ! removed_first){
             outlier_inds = outlier_inds[-1]
-            counter = counter + 1
+            removed_first = TRUE
+            # counter = counter + 1
+            next
+        }
+
+
+        #this works just like the *** comment above, but on the tail
+        #of the series. sorry for the lack of naming consistency here.
+        length(outlier_inds)
+        big_outdif = outdif > 15
+        if(big_outdif[length(big_outdif)]){ # && ! removed_last){
+            outlier_inds = outlier_inds[-length(outlier_inds)]
+            removed_last = TRUE
+            # counter = counter + 1
             next
         }
 
@@ -211,17 +265,9 @@ if(length(outlier_inds) == 1){
                 multijumps[,1], multijumps[,2],
                 SIMPLIFY=FALSE)
 
-            #these are the indices of mutijumps, which will be removed
+            #these are the indices of mutijumps, which will be ignored as
+            #potential outliers
             rm_multjump = unlist(seq_list)
-        }
-
-        #this works just like the *** comment above, but on the tail
-        #of the series. sorry for the lack of naming consistency here.
-        big_outdif = outdif > 15
-        if(big_outdif[length(big_outdif)]){
-            outlier_inds = outlier_inds[-length(outlier_inds)]
-            counter = counter + 1
-            next
         }
 
         #if none of the outlier pieces is near another, there can be
@@ -280,6 +326,8 @@ if(length(outlier_inds) == 1){
             counter = counter + 1
             next
         }
+        # print(length(outlier_inds))
+        # print(counter)
         n_outlier_pieces = length(outlier_ts)
         counter = counter + 1
     }
@@ -310,7 +358,12 @@ outlier_list[[1]] = outlier_ts
 names(outlier_list)[1] = colnames(df)[1]
 
 #visualize global and local potential outliers together
-plot(series$dateTimeUTC, tm, col='orange', ylab=foc_var, type='l', xlab='', bty='l')
+plot(series$dateTimeUTC, tm, col='orange', ylab=foc_var, type='l', xlab='',
+    bty='l')
+    # xlim=c(as.POSIXct('2017-04-05 18:00:00'),
+    #     as.POSIXct('2017-04-05 20:00:00')),
+    # # bty='l', xlim=c(as.POSIXct('2017-04-05'), as.POSIXct('2017-04-07')),
+    # ylim=c(0, 50))
 lines(series$dateTimeUTC, series$value, col='gray')
 points(series$dateTimeUTC[outlier_ts], tm[outlier_ts], col='darkred', pch=20)
 points(series$dateTimeUTC[big_outliers], tm[big_outliers], col='red', pch=20)
